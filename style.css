@@ -12,7 +12,13 @@
 
 /* Limit height for docs_list choices */
 #docs_list .wrap {
-    max-height: 400px !important;
+    max-height: 150px !important;
+    overflow-y: auto !important;
+    padding: 5px !important;
+}
+/* Limit height for sectors_list choices */
+#sectors_list .wrap {
+    max-height: 150px !important;
     overflow-y: auto !important;
     padding: 5px !important;
 }
