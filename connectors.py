@@ -41,13 +41,13 @@ class PgVectorConnector:
 
     @staticmethod
     def add_page(conn, elements_to_add: tuple):
-        if len(elements_to_add) != 6:
+        if len(elements_to_add) != 8:
             raise ValueError(
-                f"the new row to add in the \"{os.environ['POSTGRES_SPARSE_TABLE_NAME']}\" table must have 4 elements")
+                f"the new row to add in the \"{os.environ['POSTGRES_SPARSE_TABLE_NAME']}\" table must have 8 elements")
         # if not all([isinstance(el, str) for el in elements_to_add]):
         # raise ValueError(f"the new row to add in the \"{os.environ['POSTGRES_SPARSE_TABLE_NAME']}\" table can only have str elements")
 
-        query = f"INSERT INTO {os.environ['POSTGRES_SPARSE_TABLE_NAME']} (id, title, source, page_content, page_nbr, model_name) VALUES(%s, %s, %s, %s, %s, %s);"
+        query = f"INSERT INTO {os.environ['POSTGRES_SPARSE_TABLE_NAME']} (id, title, source, page_content, page_nbr, model_name, company_name, company_sectors) VALUES(%s, %s, %s, %s, %s, %s, %s, %s);"
 
         with conn.cursor() as cur:
             cur.execute(query, elements_to_add)
