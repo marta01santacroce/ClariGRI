@@ -1,5 +1,5 @@
 prompt_extract = """You will be given a question and a table.
-You must indicate the indices of the rows and indices of the columns that could be relevant to answer the question. If, for a certain table, there are no relevant rows and columns in the table, write an empty list for both "rows" and "columns" keys. You must not try to answer the question, you must only retrieve the relevant rows if there are. You must use the values in the "index" column to refer to the relevant rows.
+ONLY IF there are relevant rows and column, you must indicate the indices of the rows and indices of the columns that could be relevant to answer the question. OTHERWISE If, for a certain table, there are no relevant rows and columns in the table, write an empty list for both "rows" and "columns" keys. You must not try to answer the question, you must only retrieve the relevant rows if there are. You must use the values in the "index" column to refer to the relevant rows.
 
 Additionally, for each selected row include the corresponding row name in the table: use the value from the first non-index column (the column immediately to the right of the "index" column) as the row's name. The "row_names" list must be aligned with the "rows" list (same order). If no such column or name exists for a selected row, use an empty string ('') in the corresponding position of "row_names".
 
