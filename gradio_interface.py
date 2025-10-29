@@ -38,6 +38,37 @@ messages = [
          "Now, answer the following question based strictly on the context.\n\nQuestion: {user_message}"
      )}
 ]
+messages_sectors = [
+    {
+        "role": "system",
+        "content": (
+            "You are an expert assistant specialized in sustainability reporting and GRI standards. "
+            "You help users analyze and compare sustainability data across multiple companies belonging to the same sector.\n\n"
+            "Instructions:\n"
+            "- Think carefully through the provided information before answering.\n"
+            "- Answer clearly, concisely, and without unnecessary explanation.\n"
+            "- Use **only** the information contained in the provided context "
+            "(which includes the extracted text and tables for each company within the sector).\n"
+            "- If the answer cannot be found in the context, say so explicitly.\n"
+            "- For every factual element you mention, indicate:\n"
+            "   • The SECTOR name\n"
+            "   • The COMPANY name (source)\n"
+            "   • The PAGE number and TABLE number (as provided in the context)\n"
+            "   • The specific row or cell in the table, if applicable\n"
+            "- Do **not** explain your reasoning process; only provide the final answer with precise references."
+        )
+    },
+    {
+        "role": "user",
+        "content": (
+            "Below you have the extracted context from several companies belonging to the same sector. "
+            "Each section specifies the sector, company name (source), and the related text and tables.\n\n"
+            "---\n{context}\n---\n\n"
+            "Now, based strictly on this information, answer the following question:\n\n"
+            "Question: {user_message}"
+        )
+    }
+]
 
 
 def clear_all():
@@ -121,7 +152,7 @@ def upload_and_process_files(files):
 
             # 3. Ensemble con query
             subprocess.run(
-                [sys.executable, "main.py", "--pdf", pdf_name_server, "--load_query_from_file", json_file_query,"--use_ensemble"],
+                [sys.executable, "main.py", "--pdf", pdf_name_server, "--load_query_from_file", json_file_query, "--use_ensemble"],
                 shell=False,
                 check=True,
                 env=env,
@@ -143,7 +174,7 @@ def upload_and_process_files(files):
 
         output_lines = [f"📁**{pdf_basename_orig}** -- company name **{company_name}** \n "]
 
-        for gri_code, description in islice(data.items(), 3, 8):  # dal 4 all' 8 GRI
+        for gri_code, description in islice(data.items(), 2, 17):  # dal 2 all' 17 GRI
             if gri_code in metadata:
                 gri_line = f"   🔹**GRI {gri_code}**: {description}  "
                 output_lines.append(gri_line)
@@ -160,16 +191,16 @@ def upload_and_process_files(files):
     return "\n\n".join(results)
 
 
-def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_value):
+def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, sectors_list, select_pot_value):
     """
     Gestisce una domanda dell'utente con file PDF selezionati (docs_list).
-    Se `select_pot_value` è attivo, utilizza QueryAgent (Program-of-Thought); altrimenti segue il flusso classico con LLM diretto.
+    Se `select_pot_value` è attivo, utilizza QueryAgent (Program-of-Thought); altrimenti segue il flusso classico con LLM diretto. <-------DA FINIRE
     Se l'ultente vuole invece interrogare un settore, sectors_list sarà un input della funzione  <------ DA IMPLEMENTARE!!!!!!!!!
     """
     user_message = chat_input_data.get("text", "").strip()
 
-    if len(docs_list) == 0:
-        response = "⚠️ No documents selected."
+    if len(docs_list) == 0 and len(sectors_list) == 0:
+        response = "⚠️ No documents selected or no sectors selected."
         return chat_history + [{"role": "assistant", "content": response}]
 
     if user_message == "":
@@ -178,6 +209,11 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
+
+    settori = False
+    if len(sectors_list) > 0:
+        settori = True
+        print("SETTORI SELEZIONATI: " + str(sectors_list))
 
     # === CASO 1: Program of Thought attivo ===
     if select_pot_value:
@@ -245,77 +281,161 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
     else:
         context = ""
 
-        for file in docs_list:
-            pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
-
+        if settori:
+            print("dentro il ciclo")
             try:
                 subprocess.run(
-                    [sys.executable, "main.py", "--pdf", pdf_name, "--query", user_message, "--use_ensemble"],
-                    shell=False, check=True, env=env, capture_output=True, text=True
+                    [sys.executable, "main.py", "--query", user_message, "--use_ensemble", "--sectors"] + sectors_list,
+                    shell=False, check=True, env=env, capture_output=False, text=True
                 )
             except subprocess.CalledProcessError as e:
-                return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
+                return [{"role": "assistant", "content": f"⚠️ Error during processing:\n{e.stderr}"}]
 
-            metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
-            if not os.path.exists(metadata_path):
-                return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
+            # Itera sui settori
+            for sector in sectors_list:
+                sector_dir = os.path.join("sectors", sector)
+                metadata_path = os.path.join(sector_dir, "verbal_questions_metadata.json")
+                if not os.path.exists(metadata_path):
+                    context += f"⚠️ Nessun metadata trovato per il settore '{sector}'\n"
+                    continue
 
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
 
-            if user_message not in metadata:
-                context += f"⚠️ No references found for query '{user_message}' in {file}\n"
-                continue
+                if user_message not in metadata:
+                    context += f"⚠️ Nessun riferimento trovato per la query '{user_message}' in settore '{sector}'\n"
+                    continue
 
-            refs = metadata[user_message]
-            combined_text = ""
-            pages = []
+                refs = metadata[user_message]  # lista di dict: [{"source": ..., "pages": [...]}, ...]
+                print("refs",refs)
+                combined_text = ""
+                seen_pages = set()
 
-            for page, num in refs:
+                for source_entry in refs:
+                    src_name = source_entry.get("source")
+                    for page_entry in source_entry.get("pages", []):
+                        page = page_entry.get("page_n")
+                        csv_files = page_entry.get("csv_files", [])
 
-                # print("pages: ", pages)
+                        if page in seen_pages:
+                            continue
 
-                if page not in pages:
-                    txt_path = os.path.join("table_dataset", file, f"{page}.txt")
-                    if not os.path.exists(txt_path):
-                        print(f"DEBUG: Missing TXT file {txt_path}")
-                        continue
+                        txt_path = os.path.join("table_dataset", src_name, f"{page}.txt")
+                        if not os.path.exists(txt_path):
+                            print(f"DEBUG: Missing TXT file {txt_path}")
+                            continue
 
-                    with open(txt_path, "r", encoding="utf-8") as f:
-                        txt_content = f.read()
+                        with open(txt_path, "r", encoding="utf-8") as f:
+                            txt_content = f.read()
 
-                    placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
-                    for placeholder_num in placeholders:
-                        csv_file = os.path.join("table_dataset", file, f"{page}_{placeholder_num}.csv")
-                        if os.path.exists(csv_file):
-                            try:
-                                df = pd.read_csv(csv_file, sep=";")
-                                table_str = f"\n[Table from page {page}, num {placeholder_num}]\n" + df.to_csv(
-                                    index=False)
-                            except Exception:
-                                print(f"DEBUG: errore durante lettura CSV {csv_file}")
+                        # Rimpiazza placeholder CSV
+                        placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
+                        for placeholder_num in placeholders:
+                            csv_file = os.path.join("table_dataset", src_name, f"{page}_{placeholder_num}.csv")
+                            if os.path.exists(csv_file):
+                                try:
+                                    df = pd.read_csv(csv_file, sep=";")
+                                    table_str = f"\n[Table from {src_name} - page {page}, num {placeholder_num}]\n" + df.to_csv(
+                                        index=False)
+                                except Exception:
+                                    print(f"DEBUG: errore durante lettura CSV {csv_file}")
+                                    table_str = ""
+                            else:
                                 table_str = ""
-                        else:
-                            table_str = ""
-                        txt_content = re.sub(rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]', table_str, txt_content)
 
-                    combined_text += f"\n---\n# Page {page}\n{txt_content}\n"
-                    pages.append(page)
+                            txt_content = re.sub(rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]', table_str, txt_content)
 
-            header = f"Company name: {file}\n"
-            context += f"{header}\n{combined_text}\n---\n"
+                        combined_text += f"\n---\n# Source: {src_name}\n# Page {page}\n{txt_content}\n"
+                        seen_pages.add(page)
 
-        message = [
-            messages[0],  # system
-            {
-                "role": "user",
-                "content": messages[1]["content"].format(
-                    context=context,
-                    user_message=user_message
-                ),
-            },
-        ]
+                header = f"Sector: {sector}\n"
+                context += f"{header}\n{combined_text}\n---\n"
 
+
+        else:
+
+            for file in docs_list:
+                pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
+
+                try:
+                    subprocess.run(
+                        [sys.executable, "main.py", "--pdf", pdf_name, "--query", user_message, "--use_ensemble"],
+                        shell=False, check=True, env=env, capture_output=True, text=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
+
+                metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
+                if not os.path.exists(metadata_path):
+                    return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
+
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+
+                if user_message not in metadata:
+                    context += f"⚠️ No references found for query '{user_message}' in {file}\n"
+                    continue
+
+                refs = metadata[user_message]
+                combined_text = ""
+                pages = []
+
+                for page, num in refs:
+
+                    if page not in pages:
+                        txt_path = os.path.join("table_dataset", file, f"{page}.txt")
+                        if not os.path.exists(txt_path):
+                            print(f"DEBUG: Missing TXT file {txt_path}")
+                            continue
+
+                        with open(txt_path, "r", encoding="utf-8") as f:
+                            txt_content = f.read()
+
+                        placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
+                        for placeholder_num in placeholders:
+                            csv_file = os.path.join("table_dataset", file, f"{page}_{placeholder_num}.csv")
+                            if os.path.exists(csv_file):
+                                try:
+                                    df = pd.read_csv(csv_file, sep=";")
+                                    table_str = f"\n[Table from page {page}, num {placeholder_num}]\n" + df.to_csv(
+                                        index=False)
+                                except Exception:
+                                    print(f"DEBUG: errore durante lettura CSV {csv_file}")
+                                    table_str = ""
+                            else:
+                                table_str = ""
+                            txt_content = re.sub(rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]', table_str, txt_content)
+
+                        combined_text += f"\n---\n# Page {page}\n{txt_content}\n"
+                        pages.append(page)
+
+                header = f"Company name: {file}\n"
+                context += f"{header}\n{combined_text}\n---\n"
+
+
+
+        if settori:
+            message = [
+                messages_sectors[0],  # system
+                {
+                    "role": "user",
+                    "content": messages[1]["content"].format(
+                        context=context,
+                        user_message=user_message
+                    ),
+                },
+            ]
+        else:
+            message = [
+                messages[0],  # system
+                {
+                    "role": "user",
+                    "content": messages[1]["content"].format(
+                        context=context,
+                        user_message=user_message
+                    ),
+                },
+            ]
         response = llm.ask_openai(message)
         return chat_history + [{"role": "assistant", "content": response}]
 
@@ -518,7 +638,7 @@ with gr.Blocks() as chatbot_ui:
     # Bot risponde usando anche la selezione dei documenti
     bot_msg = chat_msg.then(
         handle_chat_with_pdf,
-        inputs=[chatbot, chat_input, docs_list, select_pot],
+        inputs=[chatbot, chat_input, docs_list, sectors_list, select_pot],
         outputs=[chatbot]
     )
 
