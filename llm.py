@@ -5,6 +5,7 @@ import json
 from phoenix.otel import register
 from openinference.instrumentation.openai import OpenAIInstrumentor
 import gradio as gr
+import fitz  # PyMuPDF
 
 # setup tracing
 tracer_provider = register(
@@ -185,6 +186,8 @@ def formatted(folder_path, pdf_basename, chatbot=False):
            - Remove symbols or characters that are clearly OCR or extraction noise.
         9. Output **only the cleaned CSV content**, no explanations or comments.
         
+        REMEMBER THAT ALL ROWS MUST HAVE THE SAME NUMBER OF FIELDS!
+        
         Here is the CSV to process:
 
         {csv_content}
@@ -234,6 +237,43 @@ def add_user_message(chatbot_history, chat_input_data):
     return updated_chat, cleared_input, saved_input
 
 
+def get_company_name(pdf_path):
+    """
+    Estrae il nome della compagnia trattata in un PDF analizzando le prime 4 pagine
+    tramite un LLM (funzione ask_openai).
+    """
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        return f"⚠️ Errore nell'aprire il PDF: {str(e)}"
+
+    # Leggi le prime 3 pagine o meno se il PDF è più corto
+    max_pages = min(3, doc.page_count)
+    text = ""
+    for i in range(max_pages):
+        page = doc[i]
+        text += page.get_text()
+
+    if not text.strip():
+        return "⚠️ Nessun testo trovato nelle prime 4 pagine"
+
+    # Prepara il prompt per LLM
+    messages = [
+        {
+            "role": "system",
+            "content": "You are an assistant who extracts the name of the main company mentioned in a PDF document."
+        },
+        {
+            "role": "user",
+            "content": f"Read this text and give only the name of the main company mentioned:\n\n{text}"
+        }
+    ]
+
+    # Chiamata al LLM
+    company_name = ask_openai(messages)
+    return company_name
+
+
 def ask_openai(messages):
     """
     Invia un prompt a OpenAI e restituisce il testo generato.
@@ -247,5 +287,7 @@ def ask_openai(messages):
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"⚠️ Errore durante la chiamata a OpenAI: {str(e)}"
+
+
 
 
