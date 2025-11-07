@@ -201,29 +201,31 @@ class QueryAgent:
         messages = [
             "To answer the question, let's focus on the following tables. Interesting values are highlighted."
         ]
-        intermediate_responses = {"extraction": {}, "normalization": {}, "PoT": {}}
-        intermediate_tables = {"extraction": {}, "normalization": {}, "PoT": {}}
+        intermediate_filtered_idx = {}
+        intermediate_tables = {}
         error = False
 
         # filter table
         for key, list_tables in tables.items():
-            intermediate_tables["extraction"][key] = []
-            intermediate_responses["extraction"][key] = []
+            intermediate_tables[key] = []
+            intermediate_filtered_idx[key] = []
             for table in list_tables:
-                intermediate_tables["extraction"][key].append(table)
+                intermediate_tables[key].append(table)
                 filtered_table, extract_response = self.filter_table(query, table)
                 if isinstance(filtered_table, int) and filtered_table == -1:
-                    error = True
+                    error_extraction = True
+                else:
+                    error_extraction = False
 
-                if error:
-                    intermediate_responses["extraction"][key].append(-1)
+                if error_extraction:
+                    intermediate_filtered_idx[key].append(-1)
                     #intermediate_tables[key].append(-1)
                 else:
-                    intermediate_responses["extraction"][key].append(extract_response)
+                    intermediate_filtered_idx[key].append(extract_response)
                     #intermediate_tables[key].append(filtered_table)
 
         table_txt = ""
-        for key, values in intermediate_tables["extraction"].items():
+        for key, values in intermediate_tables.items():
             table_txt += f"Company name: {key}\n\n"
             for value in values:
                 table_txt += value.to_html(index=False) + "\n\n"
@@ -231,11 +233,11 @@ class QueryAgent:
         messages.append("\n\n"+table_txt)
 
         # normalize table
-        list_of_rules, list_of_rules_raw = self.table_normalization(query, intermediate_tables["extraction"])
+        list_of_rules, list_of_rules_raw = self.table_normalization(query, intermediate_tables)
         messages.append("\n\n# Normalization\n\n"+list_of_rules_raw)
 
         # Table insertion
-        new_texts = self.table_insertion(texts, intermediate_tables["extraction"])
+        new_texts = self.table_insertion(texts, intermediate_tables)
 
         # PoT
         prompt = prompt_total.format(question=query, paragraph="\n\n".join(new_texts) + "\n\n" + list_of_rules)
@@ -250,9 +252,9 @@ class QueryAgent:
         results, error = self.execute(python_code, query, '\n\n'.join(new_texts) + "\n\n" + list_of_rules)
 
         if error:
-            return "PoT execution failed. Falling back to CoT...\n"+results
+            return "PoT execution failed. Falling back to CoT...\n"+results, None
 
         # Final answer
         #results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
         messages.append("\n\nFinal response: "+results)
-        return "".join(messages)
+        return "".join(messages), intermediate_filtered_idx
