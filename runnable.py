@@ -69,8 +69,8 @@ class Runnable:
 
             if self.args["embed"]:
 
-                company_name = (self.args["pdf"]).split("-")[-1]  # prende tutto dopo l'ultimo '-'
-                company_name = os.path.splitext(company_name)[0]  # rimuove .pdf
+                company_name = (self.args["pdf"]).split("-")[-1]  # get all after '-'
+                company_name = os.path.splitext(company_name)[0]  # remove .pdf
                 company_sectors = extract_company_sector.extract_company_sector(company_name)
 
                 print(f"DEB company sectors: {company_sectors} of company name: {company_name}", flush=True)
