@@ -29,13 +29,16 @@ class QueryAgent:
         text = text.replace("python", "")
         return text.strip()
 
-    def extract_result(self, text: str, pattern: str) -> str:
+    def extract_result(self, text: str, pattern: str, opposite=False) -> str:
         position = text.lower().rfind(pattern.lower())
         if position == -1:
             print(f"Cannot find pattern '{pattern}' in '{text}'. Defaulting to '{text}'...")
             return text
         else:
             position += len(pattern)
+
+        if opposite:
+            return text[:position].strip()
         return text[position:].strip()
 
     def filter_table(self, query: str, table: pd.DataFrame) -> Union[tuple[pd.DataFrame, str], tuple[int, str]]:
@@ -116,9 +119,10 @@ class QueryAgent:
 
     def table_normalization(self, query: str, intermediate_tables: dict[str, list[pd.DataFrame]]) -> str:
         html_tables = []
-        for key, tables in intermediate_tables.items():
-            for table in tables:
-                html_tables.append(table.to_html(index=False))
+        for sector_key in intermediate_tables.keys():
+            for key, tables in intermediate_tables[sector_key].items():
+                for table in tables:
+                    html_tables.append(table.to_html(index=False))
 
         prompt_text = "\n\n".join(html_tables)
         prompt = prompt_normalization.format(question=query, tables=prompt_text)
@@ -130,19 +134,67 @@ class QueryAgent:
         ])
 
         list_of_rules = self.remove_markdown_syntax(self.extract_result(list_of_rules_raw, "Final answer:"))
-        return list_of_rules
+        return list_of_rules, list_of_rules_raw
 
-    def table_insertion(self, texts: list[str], tables: Dict[int, List[pd.DataFrame]]) -> List[str]:
+    def table_insertion(self, texts: list[str], tables: Dict[Union[int, str], List[pd.DataFrame]]) -> List[str]:
+        """
+        Inserisce nelle stringhe 'texts' le tabelle HTML corrispondenti.
+        'tables' può essere:
+          - un dict con chiavi intere contigue (0..n-1) corrispondenti agli indici di texts, oppure
+          - un dict con chiavi arbitrarie (es. nomi di settori o filenames). In questo caso si usa l'ordine di list(tables.values()).
+        Se il numero di elementi in texts e in tables non coincide, la funzione fa un best-effort:
+          - usa min(len(texts), len(tables_list)) e non tocca i testi in eccesso.
+        """
+        # Normalizza tables in una lista la cui i-esima entry corrisponde al texts[i]
+        # Caso 1: chiavi numeriche contigue 0..n-1
+        try:
+            numeric_keys = False not in [all(isinstance(k, int) for k in tables[section_key].keys()) for section_key in tables.keys()]
+        except Exception:
+            numeric_keys = False
+
+        keys_sorted = sorted([subkey for subdict in tables.values() for subkey in subdict.keys()])
+        dict_wo_subdicts = {subkey:subvalue for subdict in tables.values() for subkey, subvalue in subdict.items()}
+
+        if numeric_keys:
+            # Verifica che le chiavi siano contigue a partire da 0
+            if keys_sorted == list(range(len(keys_sorted))):
+                tables_list = [dict_wo_subdicts[i] for i in range(len(keys_sorted))]
+            else:
+                # Non contigue: trasformiamo comunque in lista ordinata per chiave crescente
+                tables_list = [dict_wo_subdicts[k] for k in keys_sorted]
+        else:
+            # Chiavi non numeriche: usa ordine di inserimento / values()
+            tables_list = list(dict_wo_subdicts.values())
+
+
         new_texts = []
+        n = min(len(texts), len(tables_list))
+        # Per i testi oltre n, lasciamo il testo originale
         for i, text in enumerate(texts):
             new_text = text
-            for j in range(len(tables[i])):
-                new_text = new_text.replace(f"<Table{j + 1}>", tables[i][j].to_html(index=False))
+            if i < n:
+                tables_for_text = tables_list[i] or []
+                for j in range(len(tables_for_text)):
+                    # protezione: assicurati che la placeholder esista nel testo prima di sostituire
+                    placeholder = f"<Table{j + 1}>"
+                    if placeholder in new_text:
+                        # converti la table in html (index=False)
+                        try:
+                            new_text = new_text.replace(placeholder, tables_for_text[j].to_html(index=False))
+                        except Exception as e:
+                            print(f"DEBUG: errore convertendo table[{i}][{j}] in html: {e}", flush=True)
+                            new_text = new_text.replace(placeholder, "")  # fallback: rimuovi placeholder
+                    else:
+                        # placeholder non presente: potremmo comunque appendere la tabella o ignorare; per ora ignoriamo
+                        pass
+            else:
+                print(f"DEBUG: Nessuna tabella disponibile per texts[{i}] - lascio il testo originale.", flush=True)
+
             new_texts.append(new_text)
 
         return new_texts
 
-    def query(self, query: str, tables: Dict[int, List[pd.DataFrame]], texts: List[str]) -> str:
+    def query(self, query: str, tables: Dict[str, List[pd.DataFrame]], texts: List[str]) -> str:
         """
         given a query and a list of tables, this function processes each table in this way:
         - Filtering: extraction of relevant rows and columns from each table
@@ -153,28 +205,57 @@ class QueryAgent:
         - Final answer: the final result is given back to the LLM, which produces a general response explaining the answer
         """
 
-        intermediate_responses = {}
+        if all(isinstance(v, list) for v in tables.values()):
+            sector_question = False
+            tmp_dict = {}
+            tmp_dict["fake_sector"] = tables
+            tables = tmp_dict
+        else:
+            sector_question = True
+
+        messages = [
+            "To answer the question, let's focus on the following tables. Interesting values are highlighted."
+        ]
+        intermediate_filtered_idx = {}
         intermediate_tables = {}
         error = False
 
         # filter table
-        for key, tables in tables.items():
-            intermediate_tables[key] = []
-            intermediate_responses[key] = []
-            for table in tables:
-                filtered_table, extract_response = self.filter_table(query, table)
-                if isinstance(filtered_table, int) and filtered_table == -1:
-                    error = True
+        for sector_key in tables.keys():
+            intermediate_tables[sector_key] = {}
+            intermediate_filtered_idx[sector_key] = {}
+            for key, list_tables in tables[sector_key].items():
+                intermediate_tables[sector_key][key] = []
+                intermediate_filtered_idx[sector_key][key] = []
+                for table in list_tables:
+                    intermediate_tables[sector_key][key].append(table)
+                    filtered_table, extract_response = self.filter_table(query, table)
+                    if isinstance(filtered_table, int) and filtered_table == -1:
+                        error_extraction = True
+                    else:
+                        error_extraction = False
 
-                if error:
-                    intermediate_responses[key].append(-1)
-                    intermediate_tables[key].append(-1)
-                else:
-                    intermediate_responses[key].append(extract_response)
-                    intermediate_tables[key].append(filtered_table)
+                    if error_extraction:
+                        intermediate_filtered_idx[sector_key][key].append(-1)
+                        #intermediate_tables[key].append(-1)
+                    else:
+                        intermediate_filtered_idx[sector_key][key].append(extract_response)
+                        #intermediate_tables[key].append(filtered_table)
+
+        table_txt = ""
+        for sector_key in intermediate_tables.keys():
+            if sector_question:
+                table_txt += f"The company below are inside the following sector: {sector_key}\n\n"
+            for key, values in intermediate_tables[sector_key].items():
+                table_txt += f"Company name: {key}\n\n"
+                for value in values:
+                    table_txt += value.to_html(index=False) + "\n\n"
+        table_txt = table_txt.strip()
+        messages.append("\n\n"+table_txt)
 
         # normalize table
-        list_of_rules = self.table_normalization(query, intermediate_tables)
+        list_of_rules, list_of_rules_raw = self.table_normalization(query, intermediate_tables)
+        messages.append("\n\n# Normalization\n\n"+list_of_rules_raw)
 
         # Table insertion
         new_texts = self.table_insertion(texts, intermediate_tables)
@@ -187,50 +268,14 @@ class QueryAgent:
                 "content": prompt,
             }
         ])
+        messages.append("\n\n# 🧠 Program of Thought\n\n"+self.remove_markdown_syntax(self.extract_result(python_text_raw, "Final answer:", opposite=True))+"\n"+self.extract_result(python_text_raw, "Final answer:"))
         python_code = self.remove_markdown_syntax(self.extract_result(python_text_raw, "Final answer:"))
         results, error = self.execute(python_code, query, '\n\n'.join(new_texts) + "\n\n" + list_of_rules)
 
         if error:
-            return results
+            return "PoT execution failed. Falling back to CoT...\n"+results, None
 
         # Final answer
-        results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
-        return results
-
-
-if __name__=='__main__':
-    ag = QueryAgent()
-
-    df1 = pd.DataFrame({
-        "index": [0, 1, 2],
-        "name": ["A", "B", "C"],
-        "value": [5, 15, 25]
-    })
-
-    df2 = pd.DataFrame({
-        "index": [0, 1, 2],
-        "name": ["X", "Y", "Z"],
-        "value": [7, 12, 30]
-    })
-
-    df3 = pd.DataFrame({
-        "index": [0, 1, 2],
-        "name": ["E", "F", "G"],
-        "value": [5, 15, 25]
-    })
-
-    tables = {
-        0: [df1, df2],
-        1: [df3]
-    }
-
-    texts = [
-        "Per rispondere alla domanda, considera i dati riportati nelle tabelle " +
-        " e ".join([f"<Table{i + 1}>" for i in range(len(tables[0]))]) +
-        " e analizza i valori principali.",
-
-        "Infine, fai riferimento alla tabella " + "<Table1>" + " per completare l'analisi."
-    ]
-
-    result = ag.query("Select rows with value > 10", tables, texts)
-    print(result)
+        #results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
+        messages.append("\n\nFinal response: "+results)
+        return "".join(messages), intermediate_filtered_idx
